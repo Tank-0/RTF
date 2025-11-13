@@ -3,7 +3,6 @@
 name: 'Nuclei Vulnerability Scan'
 
 on:
-  # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
     inputs:
       target_domain:
@@ -50,67 +49,54 @@ jobs:
       - name: 'Run Nuclei Scan'
         id: nuclei-scan
         run: |
-          echo "Starting Nuclei scan on ${{ github.event.inputs.target_domain }} with severity ${{ github.event.inputs.severity }}..."
+          echo "Starting Nuclei scan on ${{ github.event.inputs.target_domain }}..."
           
+          # Run nuclei and save the simple markdown output
           nuclei \
             -u "${{ github.event.inputs.target_domain }}" \
             -severity "${{ github.event.inputs.severity }}" \
             -rate-limit 5 \
-            -jsonl \
-            -o nuclei-results.jsonl
+            -markdown \
+            -o nuclei-results.md
           
           echo "Scan complete."
 
-      - name: 'Prepare Telegram Notification'
+      - name: 'Prepare Telegram Notification File'
         id: prepare-telegram
         if: always() # Run this step even if the previous one failed
         run: |
           TARGET="${{ github.event.inputs.target_domain }}"
           SEVERITY="${{ github.event.inputs.severity }}"
-          RESULTS_FILE="nuclei-results.jsonl"
+          RESULTS_FILE="nuclei-results.md"
           WORKFLOW_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          MESSAGE_FILE="telegram-message.md"
+
+          # Create the message file
+          echo "🛡️ Nuclei Scan Report" > ${MESSAGE_FILE}
+          echo "Target: ${TARGET}" >> ${MESSAGE_FILE}
+          echo "Severity: ${SEVERITY}" >> ${MESSAGE_FILE}
+          echo "" >> ${MESSAGE_FILE} # Add a blank line
 
           if [ -s "$RESULTS_FILE" ]; then
-            # Count the number of findings
-            FINDINGS_COUNT=$(wc -l < "$RESULTS_FILE")
-            
-            # Prepare the message header
-            MESSAGE="🚨 <b>Nuclei Scan Found Vulnerabilities</b> 🚨%0A"
-            MESSAGE+="<b>Target:</b> <code>${TARGET}</code>%0A"
-            MESSAGE+="<b>Severity:</b> <code>${SEVERITY}</code>%0A"
-            MESSAGE+="<b>Findings:</b> <code>${FINDINGS_COUNT}</code>%0A%0A"
-            
-            # Add the top 5 findings to the message
-            MESSAGE+="<b>Top Findings:</b>%0A"
-            head -n 5 "$RESULTS_FILE" | while IFS= read -r line; do
-              NAME=$(echo "$line" | jq -r '.info.name // "N/A"')
-              SEV=$(echo "$line" | jq -r '.info.severity // "N/A"')
-              TEMPLATE_ID=$(echo "$line" | jq -r '.templateID // "N/A"')
-              # Escape special characters for Telegram HTML/MarkdownV2
-              ESCAPED_NAME=$(echo "$NAME" | sed 's/[_*[\]()~`>#+\-=|{}.!]/\\&/g')
-              ESCAPED_TEMPLATE_ID=$(echo "$TEMPLATE_ID" | sed 's/[_*[\]()~`>#+\-=|{}.!]/\\&/g')
-              MESSAGE+="• <b>${SEV}:</b> ${ESCAPED_NAME} (${ESCAPED_TEMPLATE_ID})%0A"
-            done
-            
-            # Add link to full results
-            MESSAGE+="%0A🔗 <a href='${WORKFLOW_URL}'>View Full Scan Report</a>"
+            echo "--- Findings ---" >> ${MESSAGE_FILE}
+            # Append the content of the results file directly
+            cat "$RESULTS_FILE" >> ${MESSAGE_FILE}
           else
-            # Prepare the "no findings" message
-            MESSAGE="✅ <b>Nuclei Scan Completed</b>%0A"
-            MESSAGE+="<b>Target:</b> <code>${TARGET}</code>%0A"
-            MESSAGE+="<b>Severity:</b> <code>${SEVERITY}</code>%0A%0A"
-            MESSAGE+="No vulnerabilities found matching the specified criteria."
-            MESSAGE+="%0A%0A🔗 <a href='${WORKFLOW_URL}'>View Scan Details</a>"
+            echo "✅ No vulnerabilities found." >> ${MESSAGE_FILE}
           fi
           
-          # Set the message as an output for the next step
-          echo "message=${MESSAGE}" >> $GITHUB_OUTPUT
+          # Add the link to the full report at the end
+          echo "" >> ${MESSAGE_FILE} # Add a blank line
+          echo "[View Full Report on GitHub](${WORKFLOW_URL})" >> ${MESSAGE_FILE}
+          
+          echo "Message file created at ${MESSAGE_FILE}"
 
       - name: 'Send Telegram Notification'
-        if: always() # Run this step even if the scan failed
+        if: always()
         uses: appleboy/telegram-action@master
         with:
           to: ${{ secrets.TELEGRAM_CHAT_ID }}
           token: ${{ secrets.TELEGRAM_TOKEN }}
-          format: html
-          message: ${{ steps.prepare-telegram.outputs.message }}
+          format: markdown
+          # This is the key change: read the message from a file
+          message_file: telegram-message.md
