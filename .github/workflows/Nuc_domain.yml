@@ -1,0 +1,115 @@
+# .github/workflows/nuclei-scan.yml
+
+name: 'Nuclei Vulnerability Scan'
+
+on:
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+    inputs:
+      target_domain:
+        description: 'The domain to scan (e.g., example.com)'
+        required: true
+        type: string
+      severity:
+        description: 'Severity level to scan for (required)'
+        required: true
+        default: 'medium'
+        type: choice
+        options:
+        - 'info'
+        - 'low'
+        - 'medium'
+        - 'high'
+        - 'critical'
+
+jobs:
+  nuclei-scan:
+    name: 'Run Nuclei on Target'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+
+    steps:
+      - name: 'Checkout Repository'
+        uses: actions/checkout@v4
+
+      - name: 'Setup Go Environment'
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: 'Install Nuclei'
+        run: |
+          go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
+
+      - name: 'Update Nuclei Templates'
+        run: |
+          nuclei -update-templates -silent
+
+      - name: 'Run Nuclei Scan'
+        id: nuclei-scan
+        run: |
+          echo "Starting Nuclei scan on ${{ github.event.inputs.target_domain }} with severity ${{ github.event.inputs.severity }}..."
+          
+          nuclei \
+            -u "${{ github.event.inputs.target_domain }}" \
+            -severity "${{ github.event.inputs.severity }}" \
+            -jsonl \
+            -o nuclei-results.jsonl
+          
+          echo "Scan complete."
+
+      - name: 'Prepare Telegram Notification'
+        id: prepare-telegram
+        if: always() # Run this step even if the previous one failed
+        run: |
+          TARGET="${{ github.event.inputs.target_domain }}"
+          SEVERITY="${{ github.event.inputs.severity }}"
+          RESULTS_FILE="nuclei-results.jsonl"
+          WORKFLOW_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          if [ -s "$RESULTS_FILE" ]; then
+            # Count the number of findings
+            FINDINGS_COUNT=$(wc -l < "$RESULTS_FILE")
+            
+            # Prepare the message header
+            MESSAGE="🚨 <b>Nuclei Scan Found Vulnerabilities</b> 🚨%0A"
+            MESSAGE+="<b>Target:</b> <code>${TARGET}</code>%0A"
+            MESSAGE+="<b>Severity:</b> <code>${SEVERITY}</code>%0A"
+            MESSAGE+="<b>Findings:</b> <code>${FINDINGS_COUNT}</code>%0A%0A"
+            
+            # Add the top 5 findings to the message
+            MESSAGE+="<b>Top Findings:</b>%0A"
+            head -n 5 "$RESULTS_FILE" | while IFS= read -r line; do
+              NAME=$(echo "$line" | jq -r '.info.name // "N/A"')
+              SEV=$(echo "$line" | jq -r '.info.severity // "N/A"')
+              TEMPLATE_ID=$(echo "$line" | jq -r '.templateID // "N/A"')
+              # Escape special characters for Telegram HTML/MarkdownV2
+              ESCAPED_NAME=$(echo "$NAME" | sed 's/[_*[\]()~`>#+\-=|{}.!]/\\&/g')
+              ESCAPED_TEMPLATE_ID=$(echo "$TEMPLATE_ID" | sed 's/[_*[\]()~`>#+\-=|{}.!]/\\&/g')
+              MESSAGE+="• <b>${SEV}:</b> ${ESCAPED_NAME} (${ESCAPED_TEMPLATE_ID})%0A"
+            done
+            
+            # Add link to full results
+            MESSAGE+="%0A🔗 <a href='${WORKFLOW_URL}'>View Full Scan Report</a>"
+          else
+            # Prepare the "no findings" message
+            MESSAGE="✅ <b>Nuclei Scan Completed</b>%0A"
+            MESSAGE+="<b>Target:</b> <code>${TARGET}</code>%0A"
+            MESSAGE+="<b>Severity:</b> <code>${SEVERITY}</code>%0A%0A"
+            MESSAGE+="No vulnerabilities found matching the specified criteria."
+            MESSAGE+="%0A%0A🔗 <a href='${WORKFLOW_URL}'>View Scan Details</a>"
+          fi
+          
+          # Set the message as an output for the next step
+          echo "message=${MESSAGE}" >> $GITHUB_OUTPUT
+
+      - name: 'Send Telegram Notification'
+        if: always() # Run this step even if the scan failed
+        uses: appleboy/telegram-action@master
+        with:
+          to: ${{ secrets.TELEGRAM_CHAT_ID }}
+          token: ${{ secrets.TELEGRAM_TOKEN }}
+          format: html
+          message: ${{ steps.prepare-telegram.outputs.message }}
