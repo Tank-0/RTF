@@ -51,13 +51,13 @@ jobs:
         run: |
           echo "Starting Nuclei scan on ${{ github.event.inputs.target_domain }}..."
           
-          # Run nuclei and save the simple markdown output
+          # Run nuclei with standard output. No -jsonl or -markdown flag.
+          # The output will be clean and human-readable.
           nuclei \
             -u "${{ github.event.inputs.target_domain }}" \
             -severity "${{ github.event.inputs.severity }}" \
             -rate-limit 5 \
-            -markdown \
-            -o nuclei-results.md
+            -o nuclei-results.txt
           
           echo "Scan complete."
 
@@ -67,11 +67,10 @@ jobs:
         run: |
           TARGET="${{ github.event.inputs.target_domain }}"
           SEVERITY="${{ github.event.inputs.severity }}"
-          RESULTS_FILE="nuclei-results.md"
-          WORKFLOW_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          MESSAGE_FILE="telegram-message.md"
+          RESULTS_FILE="nuclei-results.txt"
+          MESSAGE_FILE="telegram-message.txt"
 
-          # Create the message file
+          # Create the message file with a header
           echo "🛡️ Nuclei Scan Report" > ${MESSAGE_FILE}
           echo "Target: ${TARGET}" >> ${MESSAGE_FILE}
           echo "Severity: ${SEVERITY}" >> ${MESSAGE_FILE}
@@ -85,18 +84,17 @@ jobs:
             echo "✅ No vulnerabilities found." >> ${MESSAGE_FILE}
           fi
           
-          # Add the link to the full report at the end
-          echo "" >> ${MESSAGE_FILE} # Add a blank line
-          echo "[View Full Report on GitHub](${WORKFLOW_URL})" >> ${MESSAGE_FILE}
-          
           echo "Message file created at ${MESSAGE_FILE}"
 
-      - name: 'Send Telegram Notification'
+      - name: 'Send Telegram Notification with cURL'
         if: always()
-        uses: appleboy/telegram-action@master
-        with:
-          to: ${{ secrets.TELEGRAM_CHAT_ID }}
-          token: ${{ secrets.TELEGRAM_TOKEN }}
-          format: markdown
-          # This is the key change: read the message from a file
-          message_file: telegram-message.md
+        run: |
+          # Read the entire message from the file, preserving newlines
+          MESSAGE=$(cat telegram-message.txt)
+          
+          # Send the message using curl to the Telegram Bot API
+          curl -s -X POST \
+            "https://api.telegram.org/bot${{ secrets.TELEGRAM_TOKEN }}/sendMessage" \
+            -d chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" \
+            -d text="${MESSAGE}" \
+            -d parse_mode="Markdown"
