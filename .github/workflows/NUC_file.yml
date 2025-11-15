@@ -1,6 +1,6 @@
 # .github/workflows/nuclei-scan.yml
 
-name: 'Nuclei Vulnerability Scan'
+name: 'Nuclei Vulnerability Scan File'
 
 on:
   workflow_dispatch:
