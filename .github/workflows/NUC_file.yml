@@ -5,8 +5,8 @@ name: 'Nuclei Vulnerability Scan'
 on:
   workflow_dispatch:
     inputs:
-      target_domain:
-        description: 'The domain to scan (e.g., example.com)'
+      target_file:
+        description: 'The file containing targets to scan (e.g., targets.txt)'
         required: true
         type: string
       # --- Severity Level Checkboxes ---
@@ -64,7 +64,7 @@ jobs:
       - name: 'Run Nuclei Scan'
         id: nuclei-scan
         run: |
-          echo "Starting Nuclei scan on ${{ github.event.inputs.target_domain }}..."
+          echo "Starting Nuclei scan using targets from ${{ github.event.inputs.target_file }}..."
           
           # --- Build the -s flag string based on checkbox inputs ---
           SEVERITIES=()
@@ -97,7 +97,7 @@ jobs:
           
           # Run nuclei with the dynamically generated severity string
           nuclei \
-            -u "${{ github.event.inputs.target_domain }}" \
+            -l "${{ github.event.inputs.target_file }}" \
             -s "${SEVERITY_STRING}" \
             -rate-limit 5 \
             -o nuclei-results.txt
@@ -108,13 +108,13 @@ jobs:
         id: prepare-telegram
         if: always() # Run this step even if the previous one failed
         run: |
-          TARGET="${{ github.event.inputs.target_domain }}"
+          TARGET="${{ github.event.inputs.target_file }}"
           RESULTS_FILE="nuclei-results.txt"
           MESSAGE_FILE="telegram-message.txt"
 
           # Create the message file with a header
           echo "🛡️ Nuclei Scan Report" > ${MESSAGE_FILE}
-          echo "Target: ${TARGET}" >> ${MESSAGE_FILE}
+          echo "Target file: ${TARGET}" >> ${MESSAGE_FILE}
           echo "" >> ${MESSAGE_FILE} # Add a blank line
 
           if [ -s "$RESULTS_FILE" ]; then
