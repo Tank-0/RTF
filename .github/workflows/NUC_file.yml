@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       target_file:
-        description: 'The file containing targets to scan (e.g., targets.txt)'
+        description: 'The filename of the target list located in .github/workflows/ (e.g., xaa)'
         required: true
         type: string
       # --- Severity Level Checkboxes ---
@@ -64,8 +64,21 @@ jobs:
       - name: 'Run Nuclei Scan'
         id: nuclei-scan
         run: |
-          echo "Starting Nuclei scan using targets from ${{ github.event.inputs.target_file }}..."
+          # Get the filename from the workflow input
+          FILENAME="${{ github.event.inputs.target_file }}"
           
+          # Construct the full path, assuming the file is in the same directory as the workflow
+          TARGET_FILE=".github/workflows/${FILENAME}"
+          
+          echo "Starting Nuclei scan using targets from ${TARGET_FILE}..."
+          
+          # Check if the target file exists at the constructed path
+          if [ ! -f "$TARGET_FILE" ]; then
+            echo "❌ Error: Target file not found at '${TARGET_FILE}'"
+            echo "Please ensure the file '${FILENAME}' exists in the '.github/workflows/' directory."
+            exit 1
+          fi
+
           # --- Build the -s flag string based on checkbox inputs ---
           SEVERITIES=()
           if [ "${{ github.event.inputs.severity_critical }}" == "true" ]; then
@@ -95,9 +108,9 @@ jobs:
 
           echo "Scanning for severities: ${SEVERITY_STRING}"
           
-          # Run nuclei with the dynamically generated severity string
+          # Run nuclei with the full path to the target file
           nuclei \
-            -l "${{ github.event.inputs.target_file }}" \
+            -l "${TARGET_FILE}" \
             -s "${SEVERITY_STRING}" \
             -rate-limit 5 \
             -o nuclei-results.txt
