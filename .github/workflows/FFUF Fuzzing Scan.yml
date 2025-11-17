@@ -6,11 +6,11 @@ on:
   workflow_dispatch:
     inputs:
       wordlist_file:
-        description: 'The full path to the wordlist file in the repository (e.g., .github/workflows/Best-dns-worlist/wordlist.txt)'
+        description: 'The full path to the wordlist file in the repository (e.g., .github/workflows/wordlist.txt)'
         required: true
         type: string
       output_file:
-        description: 'The full path and filename for the HTML output (e.g., results.html)'
+        description: 'The full path and filename for the HTML output (e.g., .github/workflows/results.html)'
         required: true
         type: string
 
@@ -18,7 +18,6 @@ jobs:
   ffuf-fuzz:
     name: 'Run FFUF Fuzzer'
     runs-on: ubuntu-latest
-    # We need write permissions to upload artifacts and read permissions to access secrets.
     permissions:
       contents: write
 
@@ -35,15 +34,19 @@ jobs:
         run: |
           go install -v github.com/ffuf/ffuf/v2@latest
 
-      - name: 'Run FFUF Scan'
-        id: ffuf-scan
+      # --- MODIFIED STEP ---
+      - name: 'Run FFUF Scan with Real-time Notifications'
+        id: ffuf-scan-realtime
         run: |
+          # Exit immediately if a command exits with a non-zero status.
+          set -e
+
           # Get the inputs from the workflow dispatch form.
           WORDLIST_PATH="${{ github.event.inputs.wordlist_file }}"
           OUTPUT_PATH="${{ github.event.inputs.output_file }}"
-
+          
           echo "---"
-          echo "Starting FFUF scan against https://FUZZ.sbb.ch..."
+          echo "Starting FFUF scan against https://FUZZ.sbb.ch with real-time updates..."
           echo "Using wordlist: ${WORDLIST_PATH}"
           echo "Results will be saved to: ${OUTPUT_PATH}"
           echo "---"
@@ -51,20 +54,40 @@ jobs:
           # Check if the wordlist file exists before proceeding.
           if [ ! -f "$WORDLIST_PATH" ]; then
             echo "❌ Error: Wordlist file not found at '${WORDLIST_PATH}'"
-            echo "Please check the path and ensure the file exists in your repository."
             exit 1
           fi
           
-          echo "Running command: ffuf -u https://FUZZ.sbb.ch -w \"${WORDLIST_PATH}\" -o \"${OUTPUT_PATH}\" -fc 404 -fs 0 -of html -c"
+          echo "Running command: ffuf -u https://FUZZ.sbb.ch -w \"${WORDLIST_PATH}\" -o \"${OUTPUT_PATH}\" -fc 404 -fs 0 -of html -v"
           
-          # Execute the FFUF command with the user-provided inputs.
-          ffuf -u https://FUZZ.sbb.ch -w "${WORDLIST_PATH}" -o "${OUTPUT_PATH}" -fc 404 -fs 0 -of html -c
+          # Run FFUF and process its output line by line.
+          # We use process substitution (< <(...)) to avoid creating a subshell, which is better practice.
+          while IFS= read -r line; do
+            # FFUF outputs progress to stderr and results to stdout.
+            # We check if the line contains a status code, which indicates a finding.
+            if [[ "$line" == *"status="* ]]; then
+              echo "🔍 Found result: $line"
+              
+              # Format the message for Telegram for better readability.
+              # Extract the URL and the details part.
+              URL=$(echo "$line" | awk '{print $1}')
+              DETAILS=$(echo "$line" | awk '{print $2}')
+              
+              TELEGRAM_MESSAGE="🔍 **FFUF Discovery**\n\n\`$URL\`\n$DETAILS"
+              
+              # Send the result to Telegram immediately.
+              curl -s -X POST \
+                "https://api.telegram.org/bot${{ secrets.TELEGRAM_TOKEN }}/sendMessage" \
+                -d chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" \
+                -d text="${TELEGRAM_MESSAGE}" \
+                -d parse_mode="Markdown"
+            fi
+          done < <(ffuf -u https://FUZZ.sbb.ch -w "${WORDLIST_PATH}" -o "${OUTPUT_PATH}" -fc 404 -fs 0 -of html -v)
           
           echo "Scan complete."
+      # --- END OF MODIFIED STEP ---
 
       - name: 'Upload FFUF Results'
-        # Uploads the output file as an artifact for easy download.
-        if: always() # Run even if the scan fails.
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ffuf-results
@@ -72,38 +95,28 @@ jobs:
 
       - name: 'Prepare Telegram Notification File'
         id: prepare-telegram
-        if: always() # Run this step even if the previous one failed.
+        if: always()
         run: |
           RESULTS_FILE="${{ github.event.inputs.output_file }}"
           MESSAGE_FILE="telegram-message.txt"
-
-          # Create the message file with a header.
           echo "🔍 FFUF Fuzzing Report" > ${MESSAGE_FILE}
           echo "Target: \`https://FUZZ.sbb.ch\`" >> ${MESSAGE_FILE}
           echo "Wordlist: \`${{ github.event.inputs.wordlist_file }}\`" >> ${MESSAGE_FILE}
-          echo "" >> ${MESSAGE_FILE} # Add a blank line.
-
-          # Check if the results file has meaningful content.
-          # An empty ffuf run still creates a small HTML file, so we check its size.
-          # A size greater than 2KB is a good indicator of actual findings.
+          echo "" >> ${MESSAGE_FILE}
           if [ -s "$RESULTS_FILE" ] && [ $(stat -c%s "$RESULTS_FILE") -gt 2048 ]; then
             echo "--- Findings ---" >> ${MESSAGE_FILE}
-            echo "✅ Fuzzing completed and found potential results." >> ${MESSAGE_FILE}
+            echo "✅ Fuzzing completed and found potential results. Real-time updates were sent to Telegram." >> ${MESSAGE_FILE}
             echo "Download the 'ffuf-results' artifact from the workflow run page to view the full report." >> ${MESSAGE_FILE}
           else
             echo "--- Results ---" >> ${MESSAGE_FILE}
-            echo "No results found matching the specified filters (-fc 404, -fs 0)." >> ${MESSAGE_FILE}
+            echo "✅ Fuzzing complete. No results found matching the specified filters (-fc 404, -fs 0)." >> ${MESSAGE_FILE}
           fi
-          
           echo "Message file created at ${MESSAGE_FILE}"
-
-      - name: 'Send Telegram Notification with cURL'
+          
+      - name: 'Send Final Telegram Notification with cURL'
         if: always()
         run: |
-          # Read the entire message from the file, preserving newlines.
           MESSAGE=$(cat telegram-message.txt)
-          
-          # Send the message using curl to the Telegram Bot API.
           curl -s -X POST \
             "https://api.telegram.org/bot${{ secrets.TELEGRAM_TOKEN }}/sendMessage" \
             -d chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" \
